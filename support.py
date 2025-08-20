@@ -308,5 +308,9 @@ with tab_staff:
 
                 # Sign out
                 if st.button("Sign out"):
+                    # flip auth off
                     st.session_state["staff_authed"] = False
-                    st.experimental_rerun()
+                    # optional: clear staff tab filters/inputs so they reset next time
+                    for k in ["cat_filter", "pri_filter", "category_dropdown", "priority_dropdown"]:
+                        st.session_state.pop(k, None)
+                    st.rerun()
