@@ -1,15 +1,16 @@
-# SupportDesk — Streamlit app (CSV, popup, clear fields without reload)
+# SupportDesk — Streamlit app (CSV, popup, clear fields without reload) + Staff tab
 # Run:
-#   pip install streamlit
+#   pip install streamlit pandas
 #   streamlit run app.py
 
 import os
 import csv
-from datetime import datetime
-from typing import List
+from datetime import datetime, date
+from typing import List, Optional
 
 import streamlit as st
 import streamlit.components.v1 as components
+import pandas as pd
 
 # --- Config & paths ---
 st.set_page_config(page_title="WESO Support Desk", page_icon="💬", layout="centered")
@@ -35,12 +36,31 @@ def append_row(row: List[str]) -> None:
     with open(CSV_PATH, "a", newline="", encoding="utf-8") as f:
         csv.writer(f).writerow(row)
 
+def load_df() -> pd.DataFrame:
+    if os.path.getsize(CSV_PATH) == 0:
+        # Shouldn't happen because we write headers, but guard anyway
+        return pd.DataFrame(columns=CSV_HEADERS)
+    df = pd.read_csv(CSV_PATH)
+    # Normalize category
+    if "category" in df.columns:
+        df["category"] = df["category"].astype(str).str.strip()
+    # Normalize priority
+    if "priority" in df.columns:
+        df["priority"] = df["priority"].astype(str).str.strip()
+    # Normalize timestamp to datetime for filtering/sorting
+    if "timestamp" in df.columns:
+        with pd.option_context("mode.chained_assignment", None):
+            df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce", utc=True)
+    # Fill NaNs for display
+    return df.fillna("")
+    
 CATEGORIES = ["Question", "Bug report", "Feature request", "Other"]
 PRIORITIES = ["Normal", "High", "Urgent"]
 
 # --- Session init ---
-st.session_state.setdefault("form_instance", 0)   # bump to clear all fields
-st.session_state.setdefault("show_popup", False)  # show alert on next run
+st.session_state.setdefault("form_instance", 0)     # bump to clear all fields
+st.session_state.setdefault("show_popup", False)    # show alert on next run
+st.session_state.setdefault("staff_authed", False)  # staff login flag
 
 # --- One-time popup (no reload) ---
 if st.session_state["show_popup"]:
@@ -80,74 +100,213 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-# --- Form (values persist on errors; clear on success by bumping form_instance) ---
+# ==============================
+# Tabs: Submit | Tickets (staff)
+# ==============================
+tab_submit, tab_staff = st.tabs(["Submit ticket", "Tickets"])
 
-c1, c2 = st.columns(2)
-with c1:
-    full_name = st.text_input("Full name", key=k("full_name"), placeholder="Jane Doe", max_chars=120)
-with c2:
-    email = st.text_input("Email", key=k("email"), placeholder="jane@example.com", max_chars=200)
+with tab_submit:
+    # --- Form (values persist on errors; clear on success by bumping form_instance) ---
+    c1, c2 = st.columns(2)
+    with c1:
+        full_name = st.text_input("Full name", key=k("full_name"), placeholder="Jane Doe", max_chars=120)
+    with c2:
+        email = st.text_input("Email", key=k("email"), placeholder="jane@example.com", max_chars=200)
 
-c3, c4, c5 = st.columns([1, 1, 1])
-with c3:
-    category = st.selectbox("Category", CATEGORIES, key=k("category"), index=0)
-with c4:
-    priority = st.selectbox("Priority", PRIORITIES, key=k("priority"), index=0)
-with c5:
-    order_ref = st.text_input("Order / Ref # (optional)", key=k("order_ref"))
+    c3, c4, c5 = st.columns([1, 1, 1])
+    with c3:
+        category = st.selectbox("Category", CATEGORIES, key=k("category"), index=0)
+    with c4:
+        priority = st.selectbox("Priority", PRIORITIES, key=k("priority"), index=0)
+    with c5:
+        order_ref = st.text_input("Order / Ref # (optional)", key=k("order_ref"))
 
-subject = st.text_input("Subject", key=k("subject"), max_chars=200)
-message = st.text_area("Message", key=k("message"), height=160)
-attachment = st.file_uploader(
-    "Attachment (optional)",
-    type=["png", "jpg", "jpeg", "gif", "pdf", "txt", "log", "csv", "zip"],
-    key=k("uploader"),
-)
-consent = st.checkbox("I agree to receive email updates about this ticket.", key=k("consent"))
+    subject = st.text_input("Subject", key=k("subject"), max_chars=200)
+    message = st.text_area("Message", key=k("message"), height=160)
+    attachment = st.file_uploader(
+        "Attachment (optional)",
+        type=["png", "jpg", "jpeg", "gif", "pdf", "txt", "log", "csv", "zip"],
+        key=k("uploader"),
+    )
+    consent = st.checkbox("I agree to receive email updates about this ticket.", key=k("consent"))
 
-submitted = st.button("Submit ticket", use_container_width=True)
+    submitted = st.button("Submit ticket", use_container_width=True)
 
-# --- Handle submit ---
-if submitted:
-    errors = []
-    if not full_name.strip(): errors.append("Full name is required.")
-    if not email.strip() or "@" not in email: errors.append("Valid email is required.")
-    if not subject.strip(): errors.append("Subject is required.")
-    if not message.strip(): errors.append("Message is required.")
-    if not consent: errors.append("Consent is required.")
+    # --- Handle submit ---
+    if submitted:
+        errors = []
+        if not full_name.strip(): errors.append("Full name is required.")
+        if not email.strip() or "@" not in email: errors.append("Valid email is required.")
+        if not subject.strip(): errors.append("Subject is required.")
+        if not message.strip(): errors.append("Message is required.")
+        if not consent: errors.append("Consent is required.")
 
-    if errors:
-        st.error("\n".join(errors))  # keep inputs
+        if errors:
+            st.error("\n".join(errors))  # keep inputs
+        else:
+            # Save attachment (if any)
+            saved_name = ""
+            if attachment is not None:
+                ts = datetime.utcnow().strftime("%Y%m%d-%H%M%S-%f")
+                base = attachment.name.replace(" ", "_")
+                saved_name = f"{ts}-{base}"
+                with open(os.path.join(UPLOAD_DIR, saved_name), "wb") as out:
+                    out.write(attachment.getbuffer())
+
+            # Minimal request info (best effort)
+            client_ip = st.session_state.get("client_ip", "")
+            user_agent = st.session_state.get("user_agent", "")
+
+            # Append row
+            append_row([
+                datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                full_name.strip(),
+                email.strip(),
+                category,
+                priority,
+                (order_ref or "").strip(),
+                subject.strip(),
+                message.strip(),
+                saved_name,
+                client_ip,
+                user_agent,
+            ])
+
+            # Schedule popup and clear fields (no browser reload)
+            st.session_state["show_popup"] = True
+            st.session_state["form_instance"] += 1  # remount widgets with fresh keys
+            st.rerun()
+
+with tab_staff:
+    st.subheader("Tickets (staff)")
+
+    # --- Password gate using st.secrets ---
+    # Configure one of these in .streamlit/secrets.toml or Streamlit Cloud:
+    # STAFF_PASSWORD = "your-strong-password"
+    required_password: Optional[str] = st.secrets.get("STAFF_PASSWORD", None)
+
+    if required_password is None:
+        st.info(
+            "Staff portal is not configured. Add `STAFF_PASSWORD` to your `st.secrets` to enable this tab.\n\n"
+            "Example `.streamlit/secrets.toml`:\n\n"
+            "STAFF_PASSWORD = \"replace-me\"\n"
+        )
     else:
-        # Save attachment (if any)
-        saved_name = ""
-        if attachment is not None:
-            ts = datetime.utcnow().strftime("%Y%m%d-%H%M%S-%f")
-            base = attachment.name.replace(" ", "_")
-            saved_name = f"{ts}-{base}"
-            with open(os.path.join(UPLOAD_DIR, saved_name), "wb") as out:
-                out.write(attachment.getbuffer())
+        # Login UI
+        if not st.session_state["staff_authed"]:
+            pwd = st.text_input("Enter staff password", type="password")
+            c_login, c_spacer = st.columns([1, 3])
+            with c_login:
+                if st.button("Sign in"):
+                    if pwd == required_password:
+                        st.session_state["staff_authed"] = True
+                        st.success("Signed in.")
+                        st.rerun()
+                    else:
+                        st.error("Invalid password.")
+        else:
+            # Toolbar
+            toolbar_cols = st.columns([1,1,2,2,1])
+            with toolbar_cols[0]:
+                # default: all time; otherwise choose range
+                df = load_df()
+                if not df.empty and df["timestamp"].notna().any():
+                    min_dt = df["timestamp"].min().date()
+                    max_dt = df["timestamp"].max().date()
+                else:
+                    min_dt = date.today()
+                    max_dt = date.today()
+            with toolbar_cols[1]:
+                date_from = st.date_input("From", value=min_dt, min_value=min_dt, max_value=max_dt)
+            with toolbar_cols[2]:
+                date_to = st.date_input("To", value=max_dt, min_value=min_dt, max_value=max_dt)
+            with toolbar_cols[3]:
+                col1, col2 = st.columns(2)
+            # Build dropdown choices: "All" + known constants + any new values found in CSV
+            cat_options = ["All"] + sorted(set(CATEGORIES) | set(df["category"].unique()))
+            pri_options = ["All"] + sorted(set(PRIORITIES) | set(df["priority"].unique()))
+            with col1:
+                cat_choice = st.selectbox("Category", options=cat_options, index=0)
+            with col2:
+                pri_choice = st.selectbox("Priority", options=pri_options, index=0)
+            with toolbar_cols[4]:
+                st.write("")  # spacing
 
-        # Minimal request info (best effort)
-        client_ip = st.session_state.get("client_ip", "")
-        user_agent = st.session_state.get("user_agent", "")
+            search = st.text_input("Search (name, email, order ref, subject, message)")
+            st.caption("Tip: download the raw CSV for full offline analysis.")
 
-        # Append row
-        append_row([
-            datetime.utcnow().isoformat(timespec="seconds") + "Z",
-            full_name.strip(),
-            email.strip(),
-            category,
-            priority,
-            (order_ref or "").strip(),
-            subject.strip(),
-            message.strip(),
-            saved_name,
-            client_ip,
-            user_agent,
-        ])
+            # Load and filter
+            df = load_df()
+            if df.empty:
+                st.info("No submissions yet.")
+            else:
+                # Date range (inclusive)
+                if "timestamp" in df.columns:
+                    mask_date = (df["timestamp"].dt.date >= date_from) & (df["timestamp"].dt.date <= date_to)
+                    df = df[mask_date]
 
-        # Schedule popup and clear fields (no browser reload)
-        st.session_state["show_popup"] = True
-        st.session_state["form_instance"] += 1  # remount widgets with fresh keys
-        st.rerun()
+                # Category/priority filters
+                if cat_choice != "All":
+                    df = df[df["category"] == cat_choice]
+                if pri_choice != "All":
+                    df = df[df["priority"] == pri_choice]
+
+                # Text search
+                if search.strip():
+                    s = search.strip().lower()
+                    cols = ["full_name", "email", "order_ref", "subject", "message"]
+                    mask = pd.Series(False, index=df.index)
+                    for c in cols:
+                        if c in df.columns:
+                            mask |= df[c].astype(str).str.lower().str.contains(s, na=False)
+                    df = df[mask]
+
+                # Sort newest first
+                if "timestamp" in df.columns:
+                    df = df.sort_values("timestamp", ascending=False)
+
+                # Show a condensed view; expand to see all fields
+                show_cols = ["timestamp", "full_name", "email", "category", "priority",
+                             "order_ref", "subject", "message", "attachment_file"]
+                show_cols = [c for c in show_cols if c in df.columns]
+
+                st.dataframe(
+                    df[show_cols],
+                    use_container_width=True,
+                    hide_index=True
+                )
+
+                # Download buttons
+                csv_bytes = df.to_csv(index=False).encode("utf-8")
+                st.download_button(
+                    "Download filtered CSV",
+                    data=csv_bytes,
+                    file_name="support_submissions_filtered.csv",
+                    mime="text/csv",
+                    use_container_width=True
+                )
+
+                # Attachment fetcher (optional convenience)
+                with st.expander("Download an attachment"):
+                    if "attachment_file" in df.columns and df["attachment_file"].astype(str).str.len().sum() > 0:
+                        files = sorted({f for f in df["attachment_file"].astype(str) if f and f != "nan"})
+                        if files:
+                            chosen = st.selectbox("Select attachment", files)
+                            local_path = os.path.join(UPLOAD_DIR, chosen)
+                            if os.path.exists(local_path):
+                                with open(local_path, "rb") as fh:
+                                    st.download_button(
+                                        "Download selected attachment",
+                                        data=fh.read(),
+                                        file_name=chosen,
+                                        use_container_width=True
+                                    )
+                            else:
+                                st.warning("File not found on server.")
+                    else:
+                        st.write("No attachments in the filtered results.")
+
+                # Sign out
+                if st.button("Sign out"):
+                    st.session_state["staff_authed"] = False
+                    st.experimental_rerun()
