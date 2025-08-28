@@ -5,8 +5,7 @@
 
 import os
 import csv
-#from datetime import datetime, date
-import datetime
+from datetime import datetime, date
 from typing import List, Optional
 
 import streamlit as st
@@ -215,8 +214,8 @@ with tab_staff:
                     min_dt = df["timestamp"].min().date()
                     max_dt = df["timestamp"].max().date()
                 else:
-                    min_dt = datetime.date(2025, 8, 1)
-                    max_dt = datetime.date.today()
+                    min_dt = date.today()
+                    max_dt = date.today()
             with toolbar_cols[1]:
                 date_from = st.date_input("From", value=min_dt, min_value=min_dt, max_value=max_dt)
             with toolbar_cols[2]:
