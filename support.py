@@ -214,7 +214,7 @@ with tab_staff:
                     min_dt = df["timestamp"].min().date()
                     max_dt = df["timestamp"].max().date()
                 else:
-                    min_dt = date.today()
+                    min_dt = datetime.date(2025, 8, 1)
                     max_dt = date.today()
             with toolbar_cols[1]:
                 date_from = st.date_input("From", value=min_dt, min_value=min_dt, max_value=max_dt)
